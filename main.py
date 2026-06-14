@@ -694,10 +694,6 @@ class Main(Star):
 
                     scenes_items = PluginAPI._split_scenes(raw_scenes)
                     scenes_str = ", ".join(scenes_items)
-                    source = str(meta.get("source", "") or "") if isinstance(meta, dict) else ""
-                    scope_mode = str(meta.get("scope_mode", "public") or "public") if isinstance(meta, dict) else "public"
-                    origin_target = str(meta.get("origin_target", "") or "") if isinstance(meta, dict) else ""
-                    use_count = int(meta.get("use_count", 0) or 0) if isinstance(meta, dict) else 0
 
                     candidate_id = f"emoji_{i + 1}"
                     candidates.append(
@@ -708,10 +704,6 @@ class Main(Star):
                             "emotion": emotion,
                             "tags": tags,
                             "scenes": scenes_str,
-                            "source": source,
-                            "scope_mode": scope_mode,
-                            "origin_target": origin_target,
-                            "use_count": use_count,
                         }
                     )
                     result_lines.append(f"\n[{i + 1}] 分类：{emotion}")
@@ -719,13 +711,6 @@ class Main(Star):
                         result_lines.append(f"    标签：{tags}")
                     if scenes_str:
                         result_lines.append(f"    场景：{scenes_str}")
-                    else:
-                        result_lines.append("    场景：无")
-                    result_lines.append(f"    作用域：{scope_mode}")
-                    if use_count:
-                        result_lines.append(f"    使用次数：{use_count}")
-                    if source == "qq_store":
-                        result_lines.append("    来源：QQ商城")
                     result_lines.append(f"    描述：{desc}")
 
             if not candidates:
