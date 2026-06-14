@@ -29,6 +29,10 @@
       "description": "Allow import on audit service errors",
       "hint": "Policy hint for audit-service failures only. Images explicitly rejected by moderation will still not be imported."
     },
+    "steal_by_llm": {
+      "description": "LLM proactive stealing",
+      "hint": "Allows the LLM to proactively import images during conversation.\nRequires steal_emoji to also be enabled.\nThe LLM may tag directly or delegate analysis to VLM.\nWhen the user asks to collect an image, the LLM can respond with this tool."
+    },
     "auto_send": {
       "description": "Auto-send stickers in chat",
       "hint": "Bot will automatically send stickers during conversation. Test first."

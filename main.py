@@ -54,7 +54,7 @@ class Main(Star):
 
     # 超时和处理常量
     IMAGE_PROCESSING_TIMEOUT_SECONDS = 120  # 图片处理超时时间（GIF动图处理需要更长时间）
-    MAX_SEARCH_RESULTS = 5  # 搜索表情包最大返回数量（避免 FC 输出过长）
+    MAX_SEARCH_RESULTS = 10  # 搜索表情包最大返回数量（避免 FC 输出过长）
     AUTO_EMOJI_COOLDOWN_SECONDS = 20  # 同一会话自动发表情的最短间隔
 
     # 从外部文件加载的提示词（已迁移到ImageProcessorService）
@@ -115,6 +115,7 @@ class Main(Star):
         self.storage_cleanup_strategy = self.plugin_config.storage_cleanup_strategy
         self.smart_emoji_selection = self.plugin_config.smart_emoji_selection
         self.steal_emoji = self.plugin_config.steal_emoji
+        self.steal_by_llm = self.plugin_config.steal_by_llm
         self.auto_emoji_intent_gate = self.plugin_config.auto_emoji_intent_gate
         self.auto_emoji_cancel_on_new_message = self.plugin_config.auto_emoji_cancel_on_new_message
         self.categories = list(self.plugin_config.categories or []) or list(
@@ -172,6 +173,7 @@ class Main(Star):
     def _auto_merge_existing_categories(self) -> None:
         """自动合并已存在的分类目录到配置中。"""
         current = list(getattr(self.plugin_config, "DEFAULT_CATEGORIES", []) or [])
+        current = list(self.categories or [])
         current_set = set(current)
         discovered: set[str] = set()
         try:
@@ -619,11 +621,12 @@ class Main(Star):
         return self.emoji_selector.find_similar_categories(query, top_n)
 
     @filter.llm_tool(name="search_emoji")
-    async def search_emoji(self, event: AstrMessageEvent, query: str):
+    async def search_emoji(self, event: AstrMessageEvent, query: str, limit: int = 5):
         """搜索表情包候选，并优先按你当前心情词进行匹配。
 
         Args:
             query(string): 你当前心情的代表词（也支持描述词、场景词）
+            limit(int): 返回候选数量上限，默认为 5
 
         使用建议：
         - 先判断你此刻最能代表自己的心情词（例如：开心、无语、尴尬、感谢）
@@ -662,8 +665,9 @@ class Main(Star):
                 idx = self.db_service.get_index_cache_readonly()
 
             # smart_search 已内置关键词映射和模糊匹配（阈值0.4）
+            safe_limit = max(1, min(limit, self.MAX_SEARCH_RESULTS))
             results = await self._search_emoji_candidates(
-                event, query, limit=self.MAX_SEARCH_RESULTS, idx=idx
+                event, query, limit=safe_limit, idx=idx
             )
 
             if not results:
@@ -819,47 +823,44 @@ class Main(Star):
         event: AstrMessageEvent,
         image_ref: str,
     ):
-        """偷取图片入库。VLM 视觉模型会自动分析图片，打上分类、标签、描述和场景。
+        """保存这张图片到贴纸库，方便以后在聊天中再次使用。
+        仅在当前消息中实际存在图片，并且你已经查看过该图片内容,判断其具有较高的表情包或贴纸价值才能调用
 
         使用时机：
-        - 用户说"偷一下"/"收了这张图"时直接调用本工具。
-        - 你看到当前消息里有适合作为表情包的图片时，也可以调用本工具补充素材库。
-
-        注意：
-        - image_ref 必须从当前消息中已有的图片 URL 或文件路径中选择，必填。
-        - 不需要自己打标，工具会交给 VLM 自动完成分类、标签、描述和场景分析。
-        - 工具返回的 VLM 分析结果可用于向用户说明偷到了什么。
-        - 当插件的表情包偷取总开关关闭，或当前会话被偷取黑白名单禁用时，本工具会拒绝入库。
+        - "我想保存这个"
+        - "我喜欢这张"
+        系统会自动分析图片内容，并生成分类、标签和描述，便于后续查找和使用。
 
         Args:
-            image_ref(string): 图片 URL 或文件路径，从当前消息已有的 Image URL 中选择。
+            image_ref (string): 当前消息中的图片 URL
         """
+        image_ref = str(image_ref or "").strip()
+
+        logger.info(f"[Tool] LLM 请求偷取: ref={image_ref[:80]}")
+
         try:
-            if not self.steal_emoji:
-                yield "偷取失败：表情包偷取功能未开启，请先在插件配置中启用"
+            if not self.steal_by_llm:
+                yield "收藏失败：功能未开启，请先在插件配置中启用"
                 return
 
             if not self.is_steal_enabled_for_event(event):
-                yield "偷取失败：当前群聊已禁用偷取功能"
+                yield "收藏失败：当前群聊已禁用收藏功能"
+                return
+
+            if not image_ref:
+                yield "收藏失败：缺少 image_ref 参数，请提供当前消息中的图片 URL"
                 return
 
             event_handler = self._get_event_handler(log_message="event_handler 未初始化，无法下载图片")
             if event_handler is None:
-                yield "偷取失败：内部服务未初始化"
+                yield "收藏失败：内部服务未初始化"
                 return
-
-            image_ref = str(image_ref or "").strip()
-            if not image_ref:
-                yield "偷取失败：缺少 image_ref 参数，请提供当前消息中的图片 URL"
-                return
-
-            logger.info(f"[Tool] LLM 请求偷取: ref={image_ref[:80]}")
 
             # 下载图片
             if image_ref.startswith("http://") or image_ref.startswith("https://"):
                 temp_path, _is_gif = await event_handler._download_to_temp(image_ref, log_download=True)
                 if not temp_path or not os.path.exists(temp_path):
-                    yield f"偷取失败：无法下载图片 {image_ref[:100]}"
+                    yield f"收藏失败：无法下载图片 {image_ref[:100]}"
                     return
                 is_temp = True
             elif image_ref.startswith("file:///"):
@@ -873,14 +874,14 @@ class Main(Star):
                 is_temp = False
 
             if not os.path.exists(temp_path):
-                yield f"偷取失败：图片文件不存在: {temp_path}"
+                yield f"收藏失败：图片文件不存在: {temp_path}"
                 return
 
             precheck_ok, precheck_reason = self._precheck_image_file(temp_path)
             if not precheck_ok:
                 if is_temp:
                     await self._safe_remove_file(temp_path)
-                yield f"偷取失败：{precheck_reason}"
+                yield f"收藏失败：{precheck_reason}"
                 return
 
             # 记下入库存前已有的路径，之后 diff 找出 VLM 分析结果
@@ -889,11 +890,8 @@ class Main(Star):
 
             # 统一走 VLM 流水线
             logger.info(f"[Tool] VLM 分析入库: {temp_path}")
-            extra_meta = self._build_steal_tool_extra_meta(
-                event, image_ref, source="llm_tool"
-            )
             success, merged_idx = await self._process_image(
-                event, temp_path, is_temp=is_temp, extra_meta=extra_meta
+                event, temp_path, is_temp=is_temp
             )
 
             if not success:
@@ -902,7 +900,7 @@ class Main(Star):
                     if getattr(self, "content_filtration_fail_open", False)
                     else ""
                 )
-                yield f"偷取失败：VLM 分析未通过（可能已存在、内容不合适或无法识别为表情包）{fail_open_hint}"
+                yield f"收藏失败：VLM 分析未通过（可能已存在、内容不合适或无法识别为表情包）{fail_open_hint}"
                 return
 
             if merged_idx:
@@ -925,40 +923,20 @@ class Main(Star):
                             f"- 场景：{scenes_str or '无'}"
                         )
                         return
-                yield "偷取成功！已通过 VLM 自动分析并入库"
+                yield "收藏成功！已通过 VLM 自动分析并入库"
             else:
-                yield "偷取成功但索引更新失败"
+                yield "收藏成功但索引更新失败"
 
         except Exception as e:
-            logger.error(f"[Tool] 偷取表情包失败: {e}", exc_info=True)
-            yield f"偷取出错：{e}"
+            logger.error(f"[Tool] 收藏表情包失败: {e}", exc_info=True)
+            yield f"收藏出错：{e}"
             return
-
-    def _build_steal_tool_extra_meta(
-        self,
-        event: AstrMessageEvent,
-        image_ref: str,
-        *,
-        source: str = "llm_tool",
-    ) -> dict[str, Any] | None:
-        extra_meta: dict[str, Any] = {}
-        try:
-            scope, target_id = self.get_event_target(event)
-        except Exception:
-            scope, target_id = "", ""
-        if scope and target_id:
-            extra_meta["origin_target"] = f"{scope}:{target_id}"
-
-        if image_ref.startswith("http://") or image_ref.startswith("https://"):
-            extra_meta["origin_url"] = image_ref
-        if source:
-            extra_meta["source"] = source
-        return extra_meta or None
 
     async def _save_index(self, idx: dict[str, Any]):
         """将当前权威索引同步到数据库与缓存。"""
         await self.db_service.sync_index(idx)
         await self.cache_service.set_cache("index_cache", idx, persist=False)
+        self.emoji_selector._invalidate_bm25_index()
 
     async def _rebuild_index_from_files(self) -> dict[str, Any]:
         """从文件重建基础索引（不保存到数据库，等待合并后保存）。"""
@@ -1043,12 +1021,51 @@ class Main(Star):
 
     @filter.on_llm_request()
     async def _inject_emotion_instruction(self, event: AstrMessageEvent, req):
-        """在 LLM 请求时动态注入被动标签模式的情绪选择指令。
+        """在 LLM 请求时动态注入情绪选择指令和偷取指引。
 
         使用 extra_user_content_parts 追加指令，避免修改 system_prompt
         破坏 LLM 提供商的提示词缓存。
         """
         try:
+            # ── 偷取指引（独立于 auto_send，只要开了 steal_by_llm 就注入）──
+            if self.steal_by_llm and self.categories:
+                category_hint = []
+                try:
+                    idx = self.cache_service.get_index_cache_readonly()
+                    if not idx and self.db_service.count_total() > 0:
+                        idx = self.db_service.get_index_cache_readonly()
+                except Exception:
+                    idx = {}
+                category_counts: dict[str, int] = {}
+                if idx:
+                    for meta in idx.values():
+                        if isinstance(meta, dict):
+                            cat = str(meta.get("category", "")).strip()
+                            if cat and cat in self.categories:
+                                category_counts[cat] = category_counts.get(cat, 0) + 1
+                empty_cats = [c for c in self.categories if c not in category_counts]
+                low_cats = [c for c in self.categories if c in category_counts and category_counts[c] < 3]
+                if empty_cats:
+                    category_hint.append(f"缺素材: {', '.join(empty_cats[:5])}")
+                if low_cats:
+                    category_hint.append(f"素材少(≤2): {', '.join(low_cats[:5])}")
+
+                steal_guidance = f"""
+你可以将图片收藏到贴纸库，供未来查找和发送。
+可用分类: {', '.join(self.categories[:12])}{'...' if len(self.categories) > 12 else ''}
+"""
+                if category_hint:
+                    steal_guidance += f"分类库存提示: {'; '.join(category_hint)}\n"
+                steal_guidance += """
+使用时机:
+- "把这个存下来"
+. 你看到合适的表情包，尤其缺素材的分类，主动偷取补齐库存
+
+调用 steal_sticker 后会由自动完成分类、标签、描述和场景分析，并将结果返回给你。
+"""
+                req.extra_user_content_parts.append(TextPart(text=steal_guidance))
+
+            # ── 情绪选择指令（原有逻辑）──
             if not self.auto_send:
                 return
 
