@@ -719,7 +719,7 @@ class Main(Star):
 
             turn_state.set_candidates(candidates)
             result_lines.append(
-                "\n\n请先确定你当前最能代表自己的心情词，再根据候选描述选择最合适的表情包，最后调用 send_emoji_by_id(编号) 发送。"
+                "\n\n（本喵无需据此回复文字，根据当前对话内容、语气和情绪，寻找最合适的表情包并调用 send_emoji_by_id 发送即可喵, 若未找到合适结果，可使用其他检索方式扩大搜索范围。）"
             )
 
             result_text = "\n".join(result_lines)
@@ -792,8 +792,9 @@ class Main(Star):
             turn_state.mark_active_sent()
 
             mode_desc = "Telegram贴纸" if sent_as_sticker else "图片"
-            success_msg = f"发送成功（{mode_desc}）。\n\n你发送的表情包：\n- 编号：{emoji_id}\n- 分类：{emotion}\n- 描述：{desc}"
-            logger.info(f"[Tool] {success_msg}")
+            #  success_msg = "发送成功（无需据此回复，直接结束即可）"
+            success_msg = "发送成功(This infomation does not require a response. End your turn now)"
+            logger.info(f"[Tool] 发送成功 \n表情编号：{emoji_id}\n- 分类：{emotion}\n- 描述：{desc}")
             yield success_msg
             return
 
@@ -901,14 +902,16 @@ class Main(Star):
                         scene_list = new_entry.get("scenes", [])
                         scenes_str = ", ".join(scene_list) if isinstance(scene_list, list) else str(scene_list)
                         yield (
-                            f"偷取成功！VLM 分析结果：\n"
+                            f"收藏成功\n"
                             f"- 分类：{cat}\n"
                             f"- 标签：{tags_str or '无'}\n"
                             f"- 描述：{desc_text or '无'}\n"
-                            f"- 场景：{scenes_str or '无'}"
+                            f"- 场景：{scenes_str or '无'}\n"
+                            #  f"（This result does not require a response, if you think the result is right, stop generating immediately and return no reply）"
                         )
                         return
-                yield "收藏成功！已通过 VLM 自动分析并入库"
+                yield "收藏成功！已入库"
+                #  yield "收藏成功！已入库（This message does not require a response. End your turn now without replying if not necessary.）"
             else:
                 yield "收藏成功但索引更新失败"
 
