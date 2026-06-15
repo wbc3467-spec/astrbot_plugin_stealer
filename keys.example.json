@@ -15,5 +15,8 @@
     "NOVITA_API_KEY": "",
     "OPENROUTER_API_KEY": "",
     "CEREBRAS_API_KEY": "",
-    "MERCURY_API_KEY":""
+    "MERCURY_API_KEY":"",
+    "ASTRBOT_API_KEY": "",
+    "ASTRBOT_API_URL": "http://localhost:6185",
+    "ASTRBOT_CONFIG_NAME": "minecraft"
 }
