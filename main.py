@@ -621,12 +621,12 @@ class Main(Star):
         return self.emoji_selector.find_similar_categories(query, top_n)
 
     @filter.llm_tool(name="search_emoji")
-    async def search_emoji(self, event: AstrMessageEvent, query: str, limit: int = 5):
+    async def search_emoji(self, event: AstrMessageEvent, query: str, limit: int = 3):
         """搜索表情包候选，并优先按你当前心情词进行匹配。
 
         Args:
             query(string): 你当前心情的代表词（也支持描述词、场景词）
-            limit(int): 返回候选数量上限，默认为 5
+            limit(int): 返回候选数量上限，默认为 3
 
         使用建议：
         - 先判断你此刻最能代表自己的心情词（例如：开心、无语、尴尬、感谢）
@@ -793,7 +793,7 @@ class Main(Star):
 
             mode_desc = "Telegram贴纸" if sent_as_sticker else "图片"
             #  success_msg = "发送成功（无需据此回复，直接结束即可）"
-            success_msg = "发送成功(This infomation does not require a response. End your turn now)"
+            success_msg = "发送成功(This infomation does not require a response, use stop_responding tool if you want)"
             logger.info(f"[Tool] 发送成功 \n表情编号：{emoji_id}\n- 分类：{emotion}\n- 描述：{desc}")
             yield success_msg
             return
@@ -809,13 +809,14 @@ class Main(Star):
         event: AstrMessageEvent,
         image_ref: str,
     ):
-        """保存这张图片到贴纸库，方便以后在聊天中再次使用。
-        仅在当前消息中实际存在图片，并且你已经查看过该图片内容,判断其具有较高的表情包或贴纸价值才能调用
+        """【兜底方案】保存这张图片到贴纸库，让 VLM 自动分析分类、标签和描述。
+        仅在你**看不清图的内容**（例如只有URL你无法直接查看图片）、
+        或无法判断情绪分类时调用此工具。
 
-        使用时机：
-        - "我想保存这个"
-        - "我喜欢这张"
-        系统会自动分析图片内容，并生成分类、标签和描述，便于后续查找和使用。
+        如果能看懂图的内容，请优先使用 steal_image_direct（更可靠，不依赖VLM）。
+
+        使用时机（兜底情况）：
+        - 图的内容看不清，需要 VLM 来帮你分类
 
         Args:
             image_ref (string): 当前消息中的图片 URL
@@ -907,11 +908,10 @@ class Main(Star):
                             f"- 标签：{tags_str or '无'}\n"
                             f"- 描述：{desc_text or '无'}\n"
                             f"- 场景：{scenes_str or '无'}\n"
-                            #  f"（This result does not require a response, if you think the result is right, stop generating immediately and return no reply）"
+                            f"（This result does not require a response,  Use stop_responding tool if you want.）"
                         )
                         return
-                yield "收藏成功！已入库"
-                #  yield "收藏成功！已入库（This message does not require a response. End your turn now without replying if not necessary.）"
+                yield "收藏成功！已入库（This message does not require a response. Use stop_responding tool if you want.）"
             else:
                 yield "收藏成功但索引更新失败"
 
@@ -919,6 +919,184 @@ class Main(Star):
             logger.error(f"[Tool] 收藏表情包失败: {e}", exc_info=True)
             yield f"收藏出错：{e}"
             return
+
+    @filter.llm_tool(name="steal_image_direct")
+    async def steal_image_direct(
+        self,
+        event: AstrMessageEvent,
+        image_ref: str,
+        category: str,
+        tags: str = "",
+        desc: str = "",
+        scenes: str = "",
+    ):
+        """【优先使用】直接保存图片到贴纸库，由你自行指定分类、标签和描述。
+        当你**已经看到这张图的内容**，能自行判断情绪分类和标签时使用此工具。
+        比 steal_sticker 更可靠.
+
+        使用时机（优先）：
+        - 你看到了图的内容，能明确判断分类（如 troll、love、surprised 等）
+        - 你知道这张图适合什么标签和描述
+        - ⚠ 如果不确定当前有哪些可用分类，请先调用 view_emotion_list 查看
+
+        填写规则：
+        - 图中有文字时，优先以文字内容判断情绪和场景
+        - 能识别角色名时，在 tags 和 desc 中注明
+
+        示例:
+        category: "love"
+        tags: "猫娘, 银灰发, 爱心眼, 脸红撒娇"
+        desc: "银灰发猫娘眨着爱心眼，脸颊泛红撒娇"
+        scenes: "撒娇, 喜欢, 卖萌"
+
+        Args:
+            image_ref (string): 当前消息中的图片 URL
+            category (string): 情绪分类，必须从可用分类列表中选取
+            tags (string): 可选，逗号分隔的标签（推荐3~5个核心关键词即可）
+            desc (string): 可选，简要描述画面内容（10~30字左右）
+            scenes (string): 可选，逗号分隔的场景词（适用场景）
+        """
+        image_ref = str(image_ref or "").strip()
+        category = str(category or "").strip()
+
+        logger.info(f"[Tool] LLM 请求直接入库: ref={image_ref[:80]}, category={category}")
+
+        try:
+            if not self.steal_by_llm:
+                yield "收藏失败：功能未开启，请先在插件配置中启用"
+                return
+
+            if not self.is_steal_enabled_for_event(event):
+                yield "收藏失败：当前群聊已禁用收藏功能"
+                return
+
+            if not image_ref:
+                yield "收藏失败：缺少 image_ref 参数，请提供当前消息中的图片 URL"
+                return
+
+            if not category:
+                yield "收藏失败：缺少 category 参数"
+                return
+
+            # 校验分类有效性
+            if category not in self.categories:
+                yield f"收藏失败：分类 '{category}' 不在可用分类列表中,可用分类：{', '.join(self.categories)}"
+                return
+
+            event_handler = self._get_event_handler(log_message="event_handler 未初始化，无法下载图片")
+            if event_handler is None:
+                yield "收藏失败：内部服务未初始化"
+                return
+
+            # 下载图片
+            if image_ref.startswith("http://") or image_ref.startswith("https://"):
+                temp_path, _is_gif = await event_handler._download_to_temp(image_ref, log_download=True)
+                if not temp_path or not os.path.exists(temp_path):
+                    yield f"收藏失败：无法下载图片 {image_ref[:100]}"
+                    return
+                is_temp = True
+            elif image_ref.startswith("file:///"):
+                local_path = image_ref[8:]
+                if len(local_path) > 2 and local_path[0] == "/" and local_path[2] == ":":
+                    local_path = local_path[1:]
+                temp_path = os.path.abspath(local_path)
+                is_temp = False
+            else:
+                temp_path = os.path.abspath(image_ref)
+                is_temp = False
+
+            if not os.path.exists(temp_path):
+                yield f"收藏失败：图片文件不存在: {temp_path}"
+                return
+
+            precheck_ok, precheck_reason = self._precheck_image_file(temp_path)
+            if not precheck_ok:
+                if is_temp:
+                    await self._safe_remove_file(temp_path)
+                yield f"收藏失败：{precheck_reason}"
+                return
+
+            # 解析 tags/scenes
+            tags_list = [t.strip() for t in tags.split(",") if t.strip()] if tags else []
+            scenes_list = [s.strip() for s in scenes.split(",") if s.strip()] if scenes else []
+
+            # 调用 steal_image_direct 直接入库（不走 VLM）
+            logger.info(f"[Tool] 直接入库: {temp_path} -> {category}")
+            success, msg = await self.image_processor_service.steal_image_direct(
+                file_path=temp_path,
+                category=category,
+                tags=tags_list,
+                desc=desc.strip(),
+                scenes=scenes_list,
+                is_temp=is_temp,
+            )
+
+            if is_temp:
+                await self._safe_remove_file(temp_path)
+
+            if success:
+                yield "收藏成功！(This result does not require a response, use stop_responding tool if you want)"
+            else:
+                yield f"收藏失败：{msg}"
+
+        except Exception as e:
+            logger.error(f"[Tool] 直接入库失败: {e}", exc_info=True)
+            yield f"收藏出错：{e}"
+            return
+
+    @filter.llm_tool(name="view_emotion_list")
+    async def view_emotion_list(self, event: AstrMessageEvent):
+        """查看当前可用的情绪分类列表，包含每个分类的名称、描述和库存数量。
+        在调用 steal_image_direct 前如果不确定选什么分类，可以先调用此工具查看。
+
+        返回格式：
+        分类列表，附带每个分类的现有库存数量。
+        """
+        logger.info("[Tool] LLM 请求查看 emotion 列表")
+        try:
+            if not self.categories:
+                yield "当前没有配置任何情绪分类"
+                return
+
+            # 获取同款格式化列表
+            prompt_mgr = self.image_processor_service._prompt_manager
+            emotion_list_str = prompt_mgr._build_emotion_list_str(self.categories)
+
+            # 统计各分类库存
+            try:
+                idx = self.cache_service.get_index_cache_readonly()
+                if not idx and self.db_service.count_total() > 0:
+                    idx = self.db_service.get_index_cache_readonly()
+            except Exception:
+                idx = {}
+            category_counts: dict[str, int] = {}
+            if idx:
+                for meta in idx.values():
+                    if isinstance(meta, dict):
+                        cat = str(meta.get("category", "")).strip()
+                        if cat and cat in self.categories:
+                            category_counts[cat] = category_counts.get(cat, 0) + 1
+
+            # 构建库存信息
+            stock_lines = []
+            for c in self.categories:
+                count = category_counts.get(c, 0)
+                stock_lines.append(f"  {c}: {count}")
+
+            result = (
+                f"当前可用分类（共 {len(self.categories)} 个）：\n"
+                f"{emotion_list_str}\n"
+                "库存统计：\n"
+                + "\n".join(stock_lines)
+                + "\n 本喵无需据此回复文字，根据当前对话内容,调用 steal_image_direct 即可"
+            )
+            
+            logger.info(f"[Tool] 返回 emotion 列表，共 {len(self.categories)} 个分类")
+            yield result
+
+        except Exception as e:
+            logger.error(f"[Tool] 查看 emotion 列表失败: {e}", exc_info=True)
+            yield f"获取失败：{e}"
 
     async def _save_index(self, idx: dict[str, Any]):
         """将当前权威索引同步到数据库与缓存。"""
@@ -1006,95 +1184,6 @@ class Main(Star):
             await event_handler.on_message(event)
         except Exception as e:
             logger.error(f"[Stealer] 处理消息时发生错误: {e}", exc_info=True)
-
-    @filter.on_llm_request()
-    async def _inject_emotion_instruction(self, event: AstrMessageEvent, req):
-        """在 LLM 请求时动态注入情绪选择指令和偷取指引。
-
-        使用 extra_user_content_parts 追加指令，避免修改 system_prompt
-        破坏 LLM 提供商的提示词缓存。
-        """
-        try:
-            # ── 偷取指引（独立于 auto_send，只要开了 steal_by_llm 就注入）──
-            if self.steal_by_llm and self.categories:
-                category_hint = []
-                try:
-                    idx = self.cache_service.get_index_cache_readonly()
-                    if not idx and self.db_service.count_total() > 0:
-                        idx = self.db_service.get_index_cache_readonly()
-                except Exception:
-                    idx = {}
-                category_counts: dict[str, int] = {}
-                if idx:
-                    for meta in idx.values():
-                        if isinstance(meta, dict):
-                            cat = str(meta.get("category", "")).strip()
-                            if cat and cat in self.categories:
-                                category_counts[cat] = category_counts.get(cat, 0) + 1
-                empty_cats = [c for c in self.categories if c not in category_counts]
-                low_cats = [c for c in self.categories if c in category_counts and category_counts[c] < 3]
-                if empty_cats:
-                    category_hint.append(f"缺素材: {', '.join(empty_cats[:5])}")
-                if low_cats:
-                    category_hint.append(f"素材少(≤2): {', '.join(low_cats[:5])}")
-
-                steal_guidance = f"""
-你可以将图片收藏到贴纸库，供未来查找和发送。
-可用分类: {', '.join(self.categories[:12])}{'...' if len(self.categories) > 12 else ''}
-"""
-                if category_hint:
-                    steal_guidance += f"分类库存提示: {'; '.join(category_hint)}\n"
-                steal_guidance += """
-使用时机:
-- "把这个存下来"
-. 你看到合适的表情包，尤其缺素材的分类，主动偷取补齐库存
-
-调用 steal_sticker 后会由自动完成分类、标签、描述和场景分析，并将结果返回给你。
-"""
-                req.extra_user_content_parts.append(TextPart(text=steal_guidance))
-
-            # ── 情绪选择指令（原有逻辑）──
-            if not self.auto_send:
-                return
-
-            turn_state = self._emoji_turn_state(event)
-            if turn_state.is_active_sent():
-                return
-
-            if turn_state.is_auto_claimed():
-                return
-
-            if not await self._resolve_auto_emoji_turn_permission(event):
-                return
-
-            if self.enable_natural_emotion_analysis:
-                return
-
-            if not self.categories:
-                return
-
-            categories_str = ", ".join(self.categories)
-
-            emotion_instruction = f"""
-{self._persona_marker}
-# 角色指令：情绪表达
-你需要根据对话的上下文和你当前的回复态度，从以下列表中选择一个最匹配的情绪：
-[{categories_str}]
-
-# 输出格式严格要求
-1. 必须在回复的**最开头**，使用双浮点号 '&&' 包裹情绪标签。
-2. 格式示例：
-   &&happy&& 哈哈，这个太有意思了！
-   &&sad&& 唉，怎么会这样...
-3. 只能使用列表中的情绪词，严禁创造新词。
-4. 不要使用 Markdown 代码块或括号，**仅使用 && 符号**。
-{self._persona_marker}
-"""
-
-            req.extra_user_content_parts.append(TextPart(text=emotion_instruction))
-
-        except Exception as e:
-            logger.error(f"[Stealer] 注入情绪选择指令失败: {e}", exc_info=True)
 
     @filter.on_decorating_result(priority=100)
     async def _prepare_emoji_response(self, event: AstrMessageEvent):

@@ -432,12 +432,9 @@ class ImageProcessorService:
                 content_filtration=content_filtration,
             )
 
-            # 6. 缓存结果（锁外）
-            self._put_image_cache(hash_val, category, tags, desc, emotion, scenes)
-
-            # 7. 处理分类结果（锁内）
+            # 6. 先处理分类结果（锁内）
             async with self._process_lock:
-                return await self._handle_classification_result(
+                success, merged_idx = await self._handle_classification_result(
                     category,
                     emotion,
                     tags,
@@ -452,6 +449,12 @@ class ImageProcessorService:
                     already_in_raw=True,
                     phash_val=phash_val,
                 )
+
+            # 7. 只有有效分类才写缓存（锁外）
+            if success:
+                self._put_image_cache(hash_val, category, tags, desc, emotion, scenes)
+
+            return success, merged_idx
 
         except Exception as e:
             logger.error(f"处理图片失败 [{file_path}]: {e}")
