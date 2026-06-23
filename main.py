@@ -1157,6 +1157,92 @@ class Main(Star):
             logger.error(f"sync_vector 失败: {e}")
             yield f"同步失败喵，错误：{e}"
 
+    @meme.command("edit")
+    async def meme_edit(self, event: AstrMessageEvent, path: str, category: str = "", tags: str = "", scenes: str = "", desc: str = ""):
+        """修改贴图标签并立即更新 embedding。
+        
+        用法: /meme edit <文件路径/文件名> [category=新分类] [tags=标签1,标签2] [scenes=场景1,场景2] [desc=新描述]
+        
+        示例: /meme edit 1781507602_838caa8e.jpg category=love tags=亲吻,闭眼享受,贴贴 desc=白猫娘亲亲眯眼喵
+        """
+        try:
+            # 查找匹配的贴图
+            import os as _os
+            current_idx = await self._load_index()
+            if not current_idx:
+                yield "索引为空喵..."
+                return
+            
+            # 匹配路径（支持完整路径或文件名）
+            matched_path = None
+            for fp in current_idx:
+                if path in fp or _os.path.basename(fp) == path:
+                    matched_path = fp
+                    break
+            
+            if not matched_path:
+                yield f"未找到匹配的贴图: {path}喵_(:з」∠)_"
+                return
+            
+            entry = current_idx[matched_path]
+            if not isinstance(entry, dict):
+                yield "贴图数据异常喵..."
+                return
+            
+            # 解析参数，只更新指定的字段
+            import json
+            
+            # 从 event 消息中解析键值对（path 之后的参数）
+            msg_text = event.message_str.strip()
+            # 提取 path 后的部分
+            parts = msg_text.split(maxsplit=2)
+            rest = parts[2] if len(parts) > 2 else ""
+            
+            # 解析 key=value 格式
+            kv_pairs = {}
+            for token in rest.split():
+                if "=" in token:
+                    k, v = token.split("=", 1)
+                    kv_pairs[k.lower()] = v
+            
+            # 应用修改
+            changed_fields = []
+            
+            if "category" in kv_pairs:
+                entry["category"] = kv_pairs["category"]
+                changed_fields.append(f"分类→{kv_pairs['category']}")
+            
+            if "tags" in kv_pairs:
+                new_tags = [t.strip() for t in kv_pairs["tags"].split(",") if t.strip()]
+                entry["tags"] = new_tags
+                changed_fields.append(f"标签({len(new_tags)}个)")
+            
+            if "scenes" in kv_pairs:
+                new_scenes = [s.strip() for s in kv_pairs["scenes"].split(",") if s.strip()]
+                entry["scenes"] = new_scenes
+                changed_fields.append(f"场景({len(new_scenes)}个)")
+            
+            if "desc" in kv_pairs:
+                entry["desc"] = kv_pairs["desc"]
+                changed_fields.append(f"描述")
+            
+            if not changed_fields:
+                yield f"没有传入需要修改的字段喵！可用: category= tags= scenes= desc="
+                return
+            
+            # 保存到数据库
+            file_name = _os.path.basename(matched_path)
+            await self._save_index(current_idx)
+            
+            # 更新成功
+            yield f"✅ 贴图 [{file_name}] 修改成功喵！
+修改内容: {', '.join(changed_fields)}
+embedding 已自动更新喵～"
+            
+        except Exception as e:
+            logger.error(f"meme edit 失败: {e}", exc_info=True)
+            yield f"修改失败喵: {e}"
+
     async def _save_index(self, idx: dict[str, Any]):
         """将当前权威索引同步到数据库、缓存与向量索引。"""
         await self.db_service.sync_index(idx)
@@ -1548,70 +1634,10 @@ class Main(Star):
                 logger.error(f"容量控制循环出错: {e}")
 
     async def _vector_sync_watcher_loop(self):
-        """向量索引实时监听：监听 emoji.db 文件变更，自动更新对应 embedding。"""
-        import os
-        from .core.search.vector_index_service import VectorIndexService
-        
-        emoji_db_path = os.path.join(
-            str(self.cache_dir.parent / "cache"), "emoji.db"
-        )
-        try:
-            last_mtime = os.path.getmtime(emoji_db_path)
-        except Exception:
-            last_mtime = 0
-        
+        """已废弃：改用 /meme edit 命令直接修改标签并更新 embedding。"""
+        # 此方法保留占位，实际功能由 /meme edit 命令实现
         while True:
             try:
-                await asyncio.sleep(3)
-                
-                # 检查 emoji.db 是否被修改
-                try:
-                    current_mtime = os.path.getmtime(emoji_db_path)
-                except Exception:
-                    continue
-                
-                if current_mtime <= last_mtime:
-                    continue
-                last_mtime = current_mtime
-                
-                # 文件有改动！加载索引并扫描变更
-                vector_svc = getattr(self, "vector_index_service", None)
-                if not vector_svc or not vector_svc._initialized:
-                    continue
-                
-                current_idx = await self._load_index()
-                if not current_idx:
-                    continue
-                
-                await vector_svc.load_existing_entries()
-                changed = 0
-                
-                for file_path, entry_data in current_idx.items():
-                    if not isinstance(entry_data, dict):
-                        continue
-                    if file_path not in vector_svc._file_path_to_doc_id:
-                        await vector_svc.index_entry(file_path, entry_data)
-                        changed += 1
-                    else:
-                        try:
-                            docs = await vector_svc.faiss_db.document_storage.get_documents(
-                                metadata_filters={"file_path": file_path},
-                                limit=1
-                            )
-                            if docs:
-                                stored_text = docs[0].get("text", "") or ""
-                                current_text = VectorIndexService._build_entry_text(entry_data)
-                                if stored_text.strip() != current_text.strip():
-                                    logger.info(f"[Vector] ⚡ 检测到贴图标签变更，重新索引: {file_path}")
-                                    await vector_svc.remove_entry(file_path)
-                                    await vector_svc.index_entry(file_path, entry_data)
-                                    changed += 1
-                        except Exception as e:
-                            logger.debug(f"[Vector] 变更检测跳过: {file_path}: {e}")
-                
-                if changed > 0:
-                    logger.info(f"[Vector] ✨ 自动更新完成: {changed} 条 embedding 已重新生成")
+                await asyncio.sleep(3600)
             except asyncio.CancelledError:
                 break
-            except Exception as e:
-                logger.debug(f"[Vector] 监听循环跳过: {e}")
