@@ -1110,6 +1110,99 @@ class Main(Star):
 
 
 
+    @filter.llm_tool(name="update_emoji_info")
+    async def update_emoji_info(
+        self,
+        event: AstrMessageEvent,
+        path: str,
+        category: str = "",
+        tags: str = "",
+        desc: str = "",
+        scenes: str = "",
+    ):
+        """修改已有贴图的分类、标签、描述或场景，修改后自动更新向量索引 embedding。
+
+        当你要修改某张贴图的标签或信息时使用此工具。
+
+        填写规则：
+        - path 可以是图片的文件名（如 1781507602_838caa8e.jpg）或完整路径
+        - 只传入需要修改的字段，不需要修改的留空
+        - category 从可用分类列表中选取（可调用 view_emotion_list 查看）
+        - tags 用逗号分隔，会替换全部旧标签
+        - scenes 用逗号分隔，会替换全部旧场景
+        - desc 是新的描述文本
+
+        Args:
+            path (string): 贴图路径或文件名
+            category (string): 可选，新分类
+            tags (string): 可选，逗号分隔的新标签列表
+            desc (string): 可选，新描述
+            scenes (string): 可选，逗号分隔的新场景列表
+        """
+        import os as _os
+        
+        path = str(path or "").strip()
+        if not path:
+            yield "需要指定贴图路径或文件名喵"
+            return
+        
+        try:
+            current_idx = await self._load_index()
+            if not current_idx:
+                yield "索引为空喵..."
+                return
+            
+            # 匹配路径
+            matched_path = None
+            for fp in current_idx:
+                if path in fp or _os.path.basename(fp) == path:
+                    matched_path = fp
+                    break
+            
+            if not matched_path:
+                yield f"未找到匹配的贴图: {path}喵_(:з」∠)_"
+                return
+            
+            entry = current_idx[matched_path]
+            if not isinstance(entry, dict):
+                yield "贴图数据异常喵..."
+                return
+            
+            changed_fields = []
+            
+            if category:
+                entry["category"] = category.strip()
+                changed_fields.append(f"分类→{category}")
+            
+            if tags:
+                new_tags = [t.strip() for t in tags.split(",") if t.strip()]
+                entry["tags"] = new_tags
+                changed_fields.append(f"标签({len(new_tags)}个)")
+            
+            if scenes:
+                new_scenes = [s.strip() for s in scenes.split(",") if s.strip()]
+                entry["scenes"] = new_scenes
+                changed_fields.append(f"场景({len(new_scenes)}个)")
+            
+            if desc:
+                entry["desc"] = desc.strip()
+                changed_fields.append(f"描述")
+            
+            if not changed_fields:
+                yield f"没有传入需要修改的字段喵！"
+                return
+            
+            file_name = _os.path.basename(matched_path)
+            await self._save_index(current_idx)
+            
+            yield f"✅ 贴图 [{file_name}] 修改成功喵！
+修改内容: {', '.join(changed_fields)}
+embedding 已自动更新喵～"
+            
+        except Exception as e:
+            logger.error(f"update_emoji_info 失败: {e}", exc_info=True)
+            yield f"修改失败喵: {e}"
+
     @meme.command("edit")
     async def meme_edit(self, event: AstrMessageEvent, path: str, category: str = "", tags: str = "", scenes: str = "", desc: str = ""):
         """修改贴图标签并立即更新 embedding。
