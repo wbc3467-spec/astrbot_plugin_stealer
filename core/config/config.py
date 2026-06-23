@@ -42,6 +42,7 @@ class PluginConfig(BaseModel):
 
     # === 模型配置 ===
     vision_provider_id: str = ""
+    embedding_provider_id: str = ""  # 向量搜索所用的 Embedding 模型
     napcat_token: str = ""  # NapCat 访问令牌
 
     # === WebUI 管理界面 ===

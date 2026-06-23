@@ -241,8 +241,44 @@ class EmojiSmartSelectService:
         idx: dict | None = None,
         event: AstrMessageEvent | None = None,
     ) -> list[tuple[str, str, str, str]]:
-        """根据查询词搜索图片（BM25 检索）。"""
+        """根据查询词搜索图片（先语义向量，再 BM25 关键词，最后传统降级）。"""
         try:
+            if not idx:
+                idx = self._get_index()
+
+            recently_used_paths: set[str] = set()
+            for cat_paths in self._recent_usage.values():
+                recently_used_paths.update(cat_paths)
+
+            # 1) 先尝试向量语义搜索
+            vec_svc = self.plugin.vector_index_service if hasattr(self.plugin, "vector_index_service") else None
+            if vec_svc and getattr(vec_svc, "_initialized", False):
+                try:
+                    vec_hits = await vec_svc.search(query, k=limit * 3)
+                    if vec_hits:
+                        vec_results: list[tuple[str, str, str, str]] = []
+                        seen_paths: set[str] = set()
+                        for file_path, score in vec_hits:
+                            if file_path in seen_paths or file_path in recently_used_paths:
+                                continue
+                            if not self._is_entry_allowed_for_event(idx.get(file_path) if idx else None, event):
+                                continue
+                            seen_paths.add(file_path)
+                            data = idx.get(file_path, {}) if idx else {}
+                            desc = str(data.get("desc", "") or "")
+                            category = self._get_category_from_data(data)
+                            tags = self._parse_tags(data.get("tags", []))
+                            tags_str = ", ".join(tags)
+                            vec_results.append((file_path, desc, category, tags_str))
+                            if len(vec_results) >= limit:
+                                break
+                        if vec_results:
+                            logger.info(f"[Vector] 语义搜索命中 {len(vec_results)} 条: query='{query}'")
+                            return vec_results
+                except Exception as ve:
+                    logger.debug(f"[Vector] 语义搜索失败: {ve}")
+
+            # 2) 向量搜索无结果，降级到 BM25 关键词检索
             if self._search_engine._bm25_dirty or self._search_engine._bm25_index is None:
                 await self._search_engine._build_bm25_index(idx)
 
@@ -258,23 +294,14 @@ class EmojiSmartSelectService:
                 f"[BM25] 查询='{query}', tokens={query_tokens}, top_doc_scores={bm25_results[:10]}"
             )
 
-            if not idx:
-                idx = self._get_index()
-
-            recently_used_paths: set[str] = set()
-            for cat_paths in self._recent_usage.values():
-                recently_used_paths.update(cat_paths)
-
-            results: list[tuple[str, str, str, str]] = []
             seen_paths: set[str] = set()
+            results: list[tuple[str, str, str, str]] = []
 
             for doc_idx, bm25_score in bm25_results:
                 if doc_idx >= len(self._search_engine._bm25_doc_paths):
                     continue
                 file_path = self._search_engine._bm25_doc_paths[doc_idx]
-                if file_path in seen_paths:
-                    continue
-                if file_path in recently_used_paths:
+                if file_path in seen_paths or file_path in recently_used_paths:
                     continue
                 if not self._is_entry_allowed_for_event(idx.get(file_path) if idx else None, event):
                     continue
@@ -290,12 +317,14 @@ class EmojiSmartSelectService:
                     break
 
             if results:
+                logger.debug(f"[BM25] 关键词搜索命中 {len(results)} 条: query='{query}'")
                 return results
 
+            # 3) 全部失败，传统降级
             return await self._search_images_fallback(query, limit, idx, event)
 
         except Exception as e:
-            logger.error(f"BM25 搜索图片失败: {e}")
+            logger.error(f"搜索表情包失败: {e}")
             return await self._search_images_fallback(query, limit, idx, event)
 
     async def _search_images_fallback(
@@ -305,7 +334,8 @@ class EmojiSmartSelectService:
         idx: dict | None = None,
         event: AstrMessageEvent | None = None,
     ) -> list[tuple[str, str, str, str]]:
-        """委托给 EmojiSearchEngine。"""
+        """终极降级：委托给 EmojiSearchEngine。"""
+
         return await self._search_engine._search_images_fallback(query, limit, idx, event)
 
     def _score_entry(
@@ -333,7 +363,7 @@ class EmojiSmartSelectService:
         """智能搜索表情包（带多级 fallback）。
 
         搜索顺序：
-        1) 直接用 query 调用 search_images
+        1) 直接用 query 调用 search_images（→ 向量语义 → BM25 → 传统降级）
         2) 关键词映射（如"无语" -> dumb）
         3) 模糊匹配到分类（相似度阈值 0.4）
 

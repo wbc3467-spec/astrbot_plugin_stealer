@@ -121,6 +121,10 @@
       "description": "VLM classification prompt (with filtering)",
       "hint": "Used when content filtering is enabled. Delete all and save, then reload plugin to restore defaults."
     },
+    "embedding_provider_id": {
+      "description": "Embedding model for vector search",
+      "hint": "Embedding Model ID for semantic sticker search. Leave blank to auto-use AstrBot's first available Embedding Provider. You can find existing Embedding Provider IDs in the AstrBot admin panel under 'LLM Configuration' (e.g., bge-m3, text-embedding-ada-002)."
+    },
     "napcat_token": {
       "description": "NapCat access token",
       "hint": "Only needed in special network setups: Docker AstrBot + local NapCat where auto token detection fails. Leave blank to auto-detect from OneBot adapter config."

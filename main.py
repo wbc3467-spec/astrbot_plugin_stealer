@@ -22,6 +22,7 @@ from .core.commands.command_handler import CommandHandler
 from .core.config.config import PluginConfig
 from .core.db.database_service import DatabaseService
 from .core.search.emoji_selector import EmojiSelector
+from .core.search.vector_index_service import VectorIndexService
 from .core.events.event_handler import EventHandler
 from .core.events.emoji_sender_engine import EmojiSenderEngine
 from .core.db.index_manager import IndexManager
@@ -87,6 +88,7 @@ class Main(Star):
         self.event_handler = EventHandler(self)
         self.image_processor_service = ImageProcessorService(self)
         self.emoji_selector = EmojiSelector(self)
+        self.vector_index_service = VectorIndexService()
         self.task_scheduler = TaskScheduler()
 
         # 初始化自然语言情绪分析器（新增）
@@ -596,6 +598,14 @@ class Main(Star):
         async for result in self.command_handler.rebuild_index(event):
             yield result
 
+    @meme.command("rebuild_vector")
+    @filter.permission_type(PermissionType.ADMIN)
+    async def rebuild_vector_index(self, event: AstrMessageEvent):
+        """重建向量索引（语义搜索），让现有贴图支持语义匹配。"""
+        from .core.commands.vector_index_command import rebuild_vector_index as _do_rebuild_vector
+        async for result in _do_rebuild_vector(self, event):
+            yield result
+
     async def _search_emoji_candidates(
         self,
         event: AstrMessageEvent,
@@ -1099,10 +1109,37 @@ class Main(Star):
             yield f"获取失败：{e}"
 
     async def _save_index(self, idx: dict[str, Any]):
-        """将当前权威索引同步到数据库与缓存。"""
+        """将当前权威索引同步到数据库、缓存与向量索引。"""
         await self.db_service.sync_index(idx)
         await self.cache_service.set_cache("index_cache", idx, persist=False)
         self.emoji_selector._invalidate_bm25_index()
+
+        # 同步到向量索引（增量更新 + 内容变更检测）
+        vector_svc = getattr(self, "vector_index_service", None)
+        if vector_svc and vector_svc._initialized:
+            for file_path, entry_data in idx.items():
+                if not isinstance(entry_data, dict):
+                    continue
+                if file_path not in vector_svc._file_path_to_doc_id:
+                    # 新贴图：直接索引
+                    await vector_svc.index_entry(file_path, entry_data)
+                else:
+                    # 已索引贴图：检查内容是否变更
+                    try:
+                        docs = await vector_svc.faiss_db.document_storage.get_documents(
+                            metadata_filters={"file_path": file_path},
+                            limit=1
+                        )
+                        if docs:
+                            stored_text = docs[0].get("text", "") or ""
+                            from .core.search.vector_index_service import VectorIndexService
+                            current_text = VectorIndexService._build_entry_text(entry_data)
+                            if stored_text.strip() != current_text.strip():
+                                logger.info(f"[Vector] 贴图内容已变更，重新索引: {file_path}")
+                                await vector_svc.remove_entry(file_path)
+                                await vector_svc.index_entry(file_path, entry_data)
+                    except Exception as e:
+                        logger.warning(f"[Vector] 内容变更检测失败: {e}")
 
     async def _rebuild_index_from_files(self) -> dict[str, Any]:
         """从文件重建基础索引（不保存到数据库，等待合并后保存）。"""
@@ -1286,6 +1323,84 @@ class Main(Star):
             except Exception as e:
                 logger.error(f"初始化提示词失败: {e}")
             await self._load_index()
+
+            # 尝试初始化向量索引服务（语义搜索增强）
+            try:
+                emb_provider = None
+                emb_config_id = getattr(self.plugin_config, "embedding_provider_id", "") or ""
+                if emb_config_id:
+                    try:
+                        emb_provider = self.context.get_provider_by_id(emb_config_id)
+                    except Exception:
+                        pass
+                if emb_provider is None:
+                    embedding_providers = self.context.get_all_embedding_providers()
+                    if embedding_providers:
+                        emb_provider = embedding_providers[0]
+
+                if emb_provider is not None:
+                    vec_db_path = str(self.cache_dir / "vector_index.db")
+                    vec_idx_path = str(self.cache_dir / "vector_index.faiss")
+                    await self.vector_index_service.initialize(
+                        emb_provider, vec_db_path, vec_idx_path
+                    )
+                    current_idx = await self._load_index()
+                    if current_idx:
+                        # 先加载已有映射，避免重复索引
+                        await self.vector_index_service.load_existing_entries()
+                        
+                        # 检查已有向量数量，避免全量重建
+                        try:
+                            existing_count = await self.vector_index_service.faiss_db.count_documents()
+                        except Exception:
+                            existing_count = 0
+                        total_stickers = len(current_idx)
+                        
+                        if existing_count <= 0:
+                            # 首次：全量重建
+                            ok, total = await self.vector_index_service.rebuild_from_index(current_idx)
+                            logger.info(f"[Stealer] 向量索引全量重建: {ok}/{total} 条")
+                        else:
+                            # 增量更新 + 内容变更检测
+                            changed_count = 0
+                            new_count = 0
+                            from .core.search.vector_index_service import VectorIndexService
+                            
+                            for file_path, entry_data in current_idx.items():
+                                if not isinstance(entry_data, dict):
+                                    continue
+                                if file_path not in self.vector_index_service._file_path_to_doc_id:
+                                    # 新贴图（不存在于 FAISS 或文档存储中的）
+                                    await self.vector_index_service.index_entry(file_path, entry_data)
+                                    new_count += 1
+                                else:
+                                    # 已索引：检查内容是否变更
+                                    try:
+                                        docs = await self.vector_index_service.faiss_db.document_storage.get_documents(
+                                            metadata_filters={"file_path": file_path},
+                                            limit=1
+                                        )
+                                        if docs:
+                                            stored_text = docs[0].get("text", "") or ""
+                                            current_text = VectorIndexService._build_entry_text(entry_data)
+                                            if stored_text.strip() != current_text.strip():
+                                                logger.info(f"[Vector] 启动检测到内容变更: {file_path}")
+                                                await self.vector_index_service.remove_entry(file_path)
+                                                await self.vector_index_service.index_entry(file_path, entry_data)
+                                                changed_count += 1
+                                    except Exception as e:
+                                        logger.warning(f"[Vector] 启动内容变更检测失败: {e}")
+                            
+                            if new_count > 0 or changed_count > 0:
+                                final_count = await self.vector_index_service.faiss_db.count_documents()
+                                logger.info(f"[Stealer] 向量索引启动同步完成: 新增{new_count}条, 变更{changed_count}条, 共{final_count}条")
+                            else:
+                                logger.info(f"[Stealer] 向量索引已是最新, 共{existing_count}条")
+                else:
+                    logger.warning("[Stealer] 无可用 Embedding Provider，向量索引不可用")
+            except Exception as e:
+                logger.warning(f"[Stealer] 向量索引初始化失败: {e}")
+
             self._sync_all_config()
             self._sync_image_processor_from_runtime()
             self.task_scheduler.create_task("raw_cleanup_loop", self._raw_cleanup_loop())
@@ -1305,6 +1420,11 @@ class Main(Star):
             await self.task_scheduler.cancel_task("capacity_control_loop")
         except Exception:
             pass
+        if hasattr(self, "vector_index_service"):
+            try:
+                await self.vector_index_service.close()
+            except Exception:
+                pass
         if self.cache_service:
             try:
                 await self.cache_service.cleanup()

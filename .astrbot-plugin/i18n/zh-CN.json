@@ -121,6 +121,10 @@
       "description": "VLM 分类提示词（带审核）",
       "hint": "可直接编辑修改。开启内容审核时使用。恢复默认：删除全部内容后保存，重启插件"
     },
+    "embedding_provider_id": {
+      "description": "向量搜索嵌入模型",
+      "hint": "用于表情包语义搜索的 Embedding 模型 ID。留空则自动使用 AstrBot 第一个可用的 Embedding Provider。可在 AstrBot 管理面板「大语言模型配置」中查看已有的 Embedding Provider ID（如 bge-m3、text-embedding-ada-002）"
+    },
     "napcat_token": {
       "description": "NapCat 访问令牌",
       "hint": "仅在特殊网络环境下需要：Docker 部署 AstrBot + 本地部署 NapCat 时，如果自动获取 token 失败，可手动填写此项。留空则自动从 OneBot 适配器配置中获取"
