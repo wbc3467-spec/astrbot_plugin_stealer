@@ -1195,9 +1195,7 @@ class Main(Star):
             file_name = _os.path.basename(matched_path)
             await self._save_index(current_idx)
             
-            yield f"✅ 贴图 [{file_name}] 修改成功喵！
-修改内容: {', '.join(changed_fields)}
-embedding 已自动更新喵～"
+            yield f"贴图 [{file_name}] 修改成功喵！修改内容: {', '.join(changed_fields)}"
             
         except Exception as e:
             logger.error(f"update_emoji_info 失败: {e}", exc_info=True)
@@ -1281,9 +1279,7 @@ embedding 已自动更新喵～"
             await self._save_index(current_idx)
             
             # 更新成功
-            yield f"✅ 贴图 [{file_name}] 修改成功喵！
-修改内容: {', '.join(changed_fields)}
-embedding 已自动更新喵～"
+            yield f"✅ 贴图 [{file_name}] 修改成功喵！\\n修改内容: {', '.join(changed_fields)}\\nembedding 已自动更新喵～"
             
         except Exception as e:
             logger.error(f"meme edit 失败: {e}", exc_info=True)
