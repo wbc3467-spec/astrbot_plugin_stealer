@@ -1108,54 +1108,7 @@ class Main(Star):
             logger.error(f"[Tool] 查看 emotion 列表失败: {e}", exc_info=True)
             yield f"获取失败：{e}"
 
-    @meme.command("sync_vector")
-    async def meme_sync_vector(self, event: AstrMessageEvent):
-        """同步贴图标签变更到向量索引。修改标签后运行此命令更新 embedding。"""
-        try:
-            current_idx = await self._load_index()
-            if not current_idx:
-                yield "索引为空，无可同步喵_(:з」∠)_"
-                return
-            
-            vector_svc = getattr(self, "vector_index_service", None)
-            if not vector_svc or not vector_svc._initialized:
-                yield "向量索引未初始化，无法同步喵..."
-                return
-            
-            await self.vector_index_service.load_existing_entries()
-            
-            changed = 0
-            from .core.search.vector_index_service import VectorIndexService
-            
-            for file_path, entry_data in current_idx.items():
-                if not isinstance(entry_data, dict):
-                    continue
-                if file_path not in vector_svc._file_path_to_doc_id:
-                    await vector_svc.index_entry(file_path, entry_data)
-                    changed += 1
-                else:
-                    try:
-                        docs = await vector_svc.faiss_db.document_storage.get_documents(
-                            metadata_filters={"file_path": file_path},
-                            limit=1
-                        )
-                        if docs:
-                            stored_text = docs[0].get("text", "") or ""
-                            current_text = VectorIndexService._build_entry_text(entry_data)
-                            if stored_text.strip() != current_text.strip():
-                                await vector_svc.remove_entry(file_path)
-                                await vector_svc.index_entry(file_path, entry_data)
-                                changed += 1
-                    except Exception as e:
-                        logger.warning(f"[Vector] 同步检测失败: {file_path}: {e}")
-            
-            if changed > 0:
-                yield f"✅ 向量索引同步完成，{changed} 张贴图的 embedding 已更新喵！"
-            else:
-                yield "所有贴图的 embedding 已是最新，无需更新喵～"
-        except Exception as e:
-            logger.error(f"sync_vector 失败: {e}")
-            yield f"同步失败喵，错误：{e}"
+
 
     @meme.command("edit")
     async def meme_edit(self, event: AstrMessageEvent, path: str, category: str = "", tags: str = "", scenes: str = "", desc: str = ""):
@@ -1540,7 +1493,6 @@ embedding 已自动更新喵～"
             self._sync_image_processor_from_runtime()
             self.task_scheduler.create_task("raw_cleanup_loop", self._raw_cleanup_loop())
             self.task_scheduler.create_task("capacity_control_loop", self._capacity_control_loop())
-            self.task_scheduler.create_task("vector_sync_watcher", self._vector_sync_watcher_loop())
             logger.info("[Stealer] 插件初始化完成")
         except Exception as e:
             logger.error(f"初始化插件失败: {e}")
@@ -1554,7 +1506,6 @@ embedding 已自动更新喵～"
         try:
             await self.task_scheduler.cancel_task("raw_cleanup_loop")
             await self.task_scheduler.cancel_task("capacity_control_loop")
-            await self.task_scheduler.cancel_task("vector_sync_watcher")
         except Exception:
             pass
         if hasattr(self, "vector_index_service"):
@@ -1633,11 +1584,4 @@ embedding 已自动更新喵～"
             except Exception as e:
                 logger.error(f"容量控制循环出错: {e}")
 
-    async def _vector_sync_watcher_loop(self):
-        """已废弃：改用 /meme edit 命令直接修改标签并更新 embedding。"""
-        # 此方法保留占位，实际功能由 /meme edit 命令实现
-        while True:
-            try:
-                await asyncio.sleep(3600)
-            except asyncio.CancelledError:
-                break
+
