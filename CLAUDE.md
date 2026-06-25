@@ -88,6 +88,53 @@ AstrBot itself provides `aiohttp`, `pydantic`, and other core libraries. Do not 
 - **`pages/表情管理/`**: WebUI frontend (HTML/JS). Backend API routes are in `plugin_api.py` and must match the frontend's expected endpoints.
 - **i18n**: Translations are in `.astrbot-plugin/i18n/`. Keys must stay in sync with `core/commands/command_handler.py` and other user-facing strings.
 
+## 数据存储位置 (Data Storage Locations)
+
+插件的数据文件位于 AstrBot 的 `data/plugin_data/astrbot_plugin_stealer/` 目录下喵。
+
+### 图片文件 (Image Files)
+
+- **分类图片**: `categories/{分类名}/{原文件名}` (如 `categories/cute/xxx.jpg`)
+- **原始图片**: `raw/{原文件名}`
+
+### 索引与数据库 (Indexes & Databases)
+
+| 文件 | 格式 | 说明 | 备注 |
+|------|------|------|------|
+| `categories.json` | JSON | 分类列表 (仅分类名称) | 手动修改后需重载 |
+| `category_info.json` | JSON | 分类定义 (名称+描述) | 手动修改后需重载 |
+| `cache/emoji.db` | SQLite | **主要表情库** — 含 `emoji` 表 (path, hash, phash, category, desc, use_count 等) | 删除表情时必须同步清理喵！ |
+| `cache/vector_index.db` | SQLite (FTS5) | **向量索引元数据** — `documents` 表存 embedding 文档 (text, metadata, doc_id) | 含 FTS 全文搜索索引 |
+| `cache/bm25_cache.json` | JSON | BM25 算法缓存 | |
+| `cache/image_cache.json` | JSON | 图片缓存信息 | |
+| `cache/desc_cache.json` | JSON | 描述缓存 | |
+| `cache/text_cache.json` | JSON | 文本缓存 | |
+| `cache/blacklist_cache.json` | JSON | 黑名单 | |
+| `cache/thumb_cache/` | 目录 | 缩略图缓存 | |
+
+### 删除表情时需要清理的全部位置 (重要喵！)
+
+当使用 `/meme delete` 或 `delete_emoji` LLM 工具删除表情时，以下 **3 处** 都会被自动清理喵：
+
+1. ✅ **文件系统** — 删除 `categories/` 和 `raw/` 下的文件
+2. ✅ **`cache/emoji.db`** — 删除 `emoji` 表中对应 path 的记录
+3. ✅ **`cache/vector_index.db`** — 删除 `documents` 表中对应 file_path 的记录 (包括 FTS 索引)
+
+### 手动清理示例 (Python)
+
+```python
+# 清理 emoji.db
+import sqlite3
+conn = sqlite3.connect('cache/emoji.db')
+conn.execute("DELETE FROM emoji WHERE path = ?", (target_path,))
+conn.commit()
+
+# 清理 vector_index.db
+conn2 = sqlite3.connect('cache/vector_index.db')
+conn2.execute("DELETE FROM documents WHERE metadata LIKE ?", (f'%{file_name}%',))
+conn2.commit()
+```
+
 ## Testing Notes
 
 - `tests/conftest.py` patches `sys.modules` with fake `astrbot.*` modules before any plugin code is imported. If you add a new import from `astrbot.*` in plugin code, add the corresponding stub in `conftest.py`.
