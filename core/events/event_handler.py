@@ -461,6 +461,7 @@ class EventHandler:
 
     async def on_message(self, event: AstrMessageEvent):
         """消息监听：偷取消息中的图片并分类存储。"""
+        logger.debug(f"[Stealer-on_message] 入口触发喵！cleaned={self._cleaned}, plugin={self.plugin is not None}")
         if self._cleaned or self.plugin is None:
             return
         if not hasattr(event, "get_messages"):
@@ -472,6 +473,22 @@ class EventHandler:
         except (AttributeError, KeyError):
             force_entry = None
         force_active = force_entry is not None
+        
+        # 先提取图片，独立于偷图状态喵
+        raw_msgs = event.get_messages()
+        imgs: list[Image] = [comp for comp in raw_msgs if isinstance(comp, Image)]
+        logger.debug(f"[Stealer-imgs检测] get_messages()类型={type(raw_msgs).__name__}, 长度={len(raw_msgs) if hasattr(raw_msgs,'__len__') else 'N/A'}, imgs数量={len(imgs)}, 所有comp类型={[type(c).__name__ for c in (raw_msgs if isinstance(raw_msgs, (list, tuple)) else [])]}")
+        
+        # ==== 🐱 pHash 去重检测：所有图片输入先比对库存 ====
+        if getattr(self.plugin, 'enable_phash_dedup_check', True) and imgs:
+            try:
+                matched = await self._check_images_against_inventory(event, imgs)
+                if matched:
+                    return  # 已在库存中，注入描述后返回喵
+            except Exception as e:
+                logger.debug(f"[pHash去重] 检查失败: {e}")
+        
+        # 然后才判断偷图权限喵
         try:
             if not force_active and not plugin_instance.is_steal_enabled_for_event(event):
                 return
@@ -479,10 +496,10 @@ class EventHandler:
             return
         if not plugin_instance.steal_emoji and not force_active:
             return
-        imgs: list[Image] = [comp for comp in event.get_messages() if isinstance(comp, Image)]
         store_urls = self._extract_store_emoji_urls(event)
         if not imgs and not store_urls:
             return
+        
         if force_active:
             await self._handle_force_capture(event, plugin_instance, imgs, store_urls)
             return
@@ -729,6 +746,95 @@ class EventHandler:
         if deleted:
             logger.debug(f"raw 目录清理: 删除了 {deleted} 个文件")
         return deleted
+
+    async def _check_images_against_inventory(
+        self, event: AstrMessageEvent, imgs: list[Image]
+    ) -> bool:
+        """对所有图片输入进行 pHash 比对，命中则回复库存信息。"""
+        plugin = self.plugin
+        proc_svc = getattr(plugin, "image_processor_service", None)
+        db_svc = getattr(plugin, "db_service", None)
+        if not proc_svc or not db_svc:
+            return False
+        phash_svc = getattr(proc_svc, "_phash_service", None)
+        if not phash_svc:
+            return False
+
+        phash_map = db_svc.get_phash_map()
+        logger.debug(f"[pHash调试] phash_map条目数={len(phash_map) if phash_map else 0}")
+        if not phash_map:
+            logger.debug(f"[pHash调试] phash_map为空，跳过喵")
+            return False
+
+        matched_any = False
+        for img_idx, img in enumerate(imgs):
+            temp_path = None
+            try:
+                result = await self._download_original_image(img)
+                if isinstance(result, tuple):
+                    temp_path, _ = result
+                else:
+                    temp_path = result
+                logger.debug(f"[pHash调试] 图{img_idx}下载结果: temp_path={temp_path}, exists={Path(temp_path).exists() if temp_path else 'N/A'}")
+                if not temp_path or not Path(temp_path).exists():
+                    continue
+
+                phash = await phash_svc.compute_phash(temp_path)
+                logger.debug(f"[pHash调试] 图{img_idx} phash计算完成: phash={phash}")
+                if not phash:
+                    continue
+
+                for entry_path, existing_phash in phash_map.items():
+                    distance = phash_svc.hamming_distance(phash, existing_phash)
+                    logger.debug(f"[pHash调试] 比对 {entry_path}: distance={distance}, 阈值={phash_svc.PHASH_HAMMING_THRESHOLD}")
+                    if distance <= phash_svc.PHASH_HAMMING_THRESHOLD:
+                        entry = db_svc.get_emoji(entry_path)
+                        if entry:
+                            category = entry.get("category", "未知")
+                            tags_list = entry.get("tags", [])
+                            if isinstance(tags_list, str):
+                                tags_list = [tags_list]
+                            desc = entry.get("desc", "")
+                            scenes_list = entry.get("scenes", [])
+                            if isinstance(scenes_list, str):
+                                scenes_list = [scenes_list]
+
+                            # 注入库存描述到消息链喵
+                            inject_parts = []
+                            if desc:
+                                inject_parts.append(desc)
+                            if tags_list:
+                                inject_parts.append('标签: ' + ', '.join(tags_list[:5]))
+                            if scenes_list:
+                                inject_parts.append('场景: ' + ', '.join(scenes_list[:3]))
+
+                            inject_text = '[库存识别: ' + ' | '.join(inject_parts) + ']'
+
+                            # 同时注入消息链和 message_str，保证 LLM 能看到喵
+                            try:
+                                messages = event.get_messages()
+                                for i, comp in enumerate(messages):
+                                    if isinstance(comp, Image):
+                                        messages.insert(i + 1, Plain(text=inject_text))
+                                        break
+                                # 也加到 message_str 里喵
+                                event.message_str = event.message_str + ' [' + inject_text + ']'
+                                logger.debug(f"[pHash] 已注入库存描述: {inject_text}")
+                            except Exception as inject_err:
+                                logger.debug(f"[pHash] 注入失败: {inject_err}")
+                            matched_any = True
+                        break
+            except Exception as e:
+                logger.debug(f"[pHash去重] 图片处理异常: {e}")
+            finally:
+                # 只有在匹配成功时才删临时文件（因为我们return了，VLM不用它喵）
+                # 不匹配时要保留文件给VLM喵！主人様咬耳朵警告喵！！
+                if matched_any and temp_path and Path(temp_path).exists():
+                    try:
+                        await self.plugin._safe_remove_file(temp_path)
+                    except Exception:
+                        pass
+        return matched_any
 
     async def cleanup_async(self) -> None:
         """异步清理资源。"""

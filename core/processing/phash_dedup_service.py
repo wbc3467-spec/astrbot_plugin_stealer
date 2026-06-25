@@ -15,7 +15,7 @@ class PHashDedupService:
     """基于感知哈希 (pHash) 的图片视觉去重服务。"""
 
     PHASH_SIZE = 16  # 感知哈希图片缩放尺寸（16x16 = 256 bit hash）
-    PHASH_HAMMING_THRESHOLD = 20  # 汉明距离阈值，低于此值视为重复
+    PHASH_HAMMING_THRESHOLD = 100  # 汉明距离阈值，低于此值视为重复喵（铃芽亲亲图距离84，speechless图距离131）
 
     def __init__(self, plugin_instance: Any = None) -> None:
         self.plugin = plugin_instance

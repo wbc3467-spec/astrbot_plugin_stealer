@@ -60,6 +60,12 @@
     "default": false,
     "hint": "开启后 LLM 可在对话中主动偷取图片入库。\n需要 steal_emoji 同时开启。\nLLM 可自己打标或交给 VLM 分析。\n用户说'偷一下这个'时 LLM 会响应。"
   },
+  "enable_phash_dedup_check": {
+    "description": "图片去重检测（所有图片输入）",
+    "type": "bool",
+    "default": true,
+    "hint": "✅ 开启后，所有收到的图片都会先和库存进行感知哈希比对喵～\n如果发现重复，直接显示库存中已有的标签和描述，不用再偷一遍喵！"
+  },
   "_send_section": {
     "description": "=== 发送设置 ===",
     "type": "text",

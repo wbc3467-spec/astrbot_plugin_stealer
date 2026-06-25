@@ -127,6 +127,7 @@ class Main(Star):
         self.napcat_token = self._load_napcat_token()
         self.enable_natural_emotion_analysis = self.plugin_config.enable_natural_emotion_analysis
         self.emotion_analysis_provider_id = self.plugin_config.emotion_analysis_provider_id
+        self.enable_phash_dedup_check = self.plugin_config.enable_phash_dedup_check
         self.image_processing_cooldown = self.plugin_config.image_processing_cooldown
 
     def _load_vision_provider_id(self) -> str:
@@ -568,11 +569,19 @@ class Main(Star):
         async for result in self.command_handler.list_images(event, category, limit, page):
             yield result
 
-    @filter.permission_type(PermissionType.ADMIN)
     @meme.command("delete")
     async def delete_image(self, event: AstrMessageEvent, identifier: str = ""):
         """删除指定表情包。用法: /meme delete <序号|文件名>"""
         async for result in self.command_handler.delete_image(event, identifier):
+            yield result
+
+    @filter.llm_tool(name="delete_emoji")
+    async def llm_delete_emoji(self, event: AstrMessageEvent, file_path: str = ""):
+        """彻底删除指定的表情/贴纸喵。需要提供文件路径（如 cute/filename.jpg），先调用 search_emoji 可以获取路径喵。"""
+        if not file_path:
+            yield event.plain_result("请提供要删除的表情的文件路径喵！可先使用 search_emoji 查看。")
+            return
+        async for result in self.command_handler.delete_image(event, file_path):
             yield result
 
     @filter.permission_type(PermissionType.ADMIN)

@@ -3,6 +3,7 @@
 import asyncio
 import os
 import tempfile
+from pathlib import Path
 from typing import Any
 
 import aiohttp
@@ -119,7 +120,30 @@ class ImageDownloadService:
         Returns:
             tuple[str | None, bool]: (临时文件路径, 是否为GIF动图)，失败返回 (None, False)
         """
-        return await self.download_to_temp(getattr(img, "url", ""), log_download=True)
+        # 优先使用 Image 组件自带的 convert_to_file_path 方法喵！
+        if hasattr(img, 'convert_to_file_path'):
+            try:
+                file_path = await img.convert_to_file_path()
+                if file_path and Path(file_path).exists():
+                    is_gif = file_path.lower().endswith(".gif")
+                    logger.debug(f"[图片下载] convert_to_file_path 成功: {file_path}")
+                    return file_path, is_gif
+            except Exception as e:
+                logger.debug(f"[图片下载] convert_to_file_path 失败: {e}")
+        
+        # 备用：手动检查属性喵
+        url = getattr(img, "url", "") or getattr(img, "file", "")
+        if url:
+            return await self.download_to_temp(url, log_download=True)
+        
+        # 最后手段：检查 path 属性喵
+        file_path = getattr(img, "path", "") or getattr(img, "file_path", "")
+        if file_path and Path(file_path).exists():
+            is_gif = file_path.lower().endswith(".gif")
+            return file_path, is_gif
+        
+        logger.debug(f"[图片下载] 所有方式都失败了喵，img.dir部分属性: {[a for a in dir(img) if not a.startswith('_')][:15]}")
+        return None, False
 
     async def download_url_to_temp(self, url: str) -> tuple[str | None, bool]:
         """从 URL 下载文件到临时文件，返回 (temp_path, is_gif)。"""

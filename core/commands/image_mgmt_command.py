@@ -264,6 +264,36 @@ class ImageManagementCommand:
             return
 
         # 执行删除操作
+        # 从向量索引中删除
+        vec_svc = getattr(self.plugin, "vector_index_service", None)
+        if vec_svc is not None:
+            await vec_svc.remove_entry(target_image["path"])
+
+        # 从 emoji.db 中删除
+        try:
+            import sqlite3
+            from pathlib import Path
+            candidate_dbs = [
+                Path(self.plugin.data_dir) / "cache" / "emoji.db",
+                Path("/root/AstrBot/data/plugin_data/astrbot_plugin_stealer/cache/emoji.db"),
+            ]
+            db_path = None
+            for p in candidate_dbs:
+                if p.exists():
+                    db_path = p
+                    break
+            if db_path:
+                conn = sqlite3.connect(str(db_path))
+                cur = conn.cursor()
+                cur.execute("DELETE FROM emoji WHERE path = ?", (target_image["path"],))
+                affected = cur.rowcount
+                conn.commit()
+                conn.close()
+                if affected > 0:
+                    logger.info(f"[emoji.db] 已删除 {affected} 条记录: {target_image['path']}")
+        except Exception as e:
+            logger.warning(f"[emoji.db] 删除时出错: {e}")
+        
         success = await self._delete_image_files(target_image["path"])
 
         if success:
