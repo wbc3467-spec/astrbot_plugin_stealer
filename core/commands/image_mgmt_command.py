@@ -285,8 +285,14 @@ class ImageManagementCommand:
             if db_path:
                 conn = sqlite3.connect(str(db_path))
                 cur = conn.cursor()
+                # 先按完整路径删喵
                 cur.execute("DELETE FROM emoji WHERE path = ?", (target_image["path"],))
                 affected = cur.rowcount
+                # 如果没删到，按文件名兜底喵
+                if affected == 0:
+                    name_only = target_image["path"].split("/")[-1]
+                    cur.execute("DELETE FROM emoji WHERE path LIKE ?", (f"%/{name_only}",))
+                    affected = cur.rowcount
                 conn.commit()
                 conn.close()
                 if affected > 0:
@@ -447,7 +453,7 @@ class ImageManagementCommand:
             pass
 
         for img in valid_images:
-            if img["name"] == identifier or img["name"].startswith(identifier):
+            if img["name"] == identifier or img["name"].startswith(identifier) or identifier.endswith(img["name"]):
                 return img
 
         return None

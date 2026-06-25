@@ -90,6 +90,16 @@ class VectorIndexService:
             return
 
         doc_id = self._file_path_to_doc_id.pop(file_path, None)
+
+        # 兜底：按文件名搜索（处理路径格式不一致的情况喵）
+        if doc_id is None:
+            file_name = file_path.split("/")[-1]
+            for stored_path, stored_id in list(self._file_path_to_doc_id.items()):
+                if stored_path.split("/")[-1] == file_name:
+                    doc_id = stored_id
+                    self._file_path_to_doc_id.pop(stored_path, None)
+                    break
+
         if doc_id is not None:
             try:
                 # FaissVecDB.delete() 需要 UUID 字符串，从文档存储查询

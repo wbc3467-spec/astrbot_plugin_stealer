@@ -576,13 +576,51 @@ class Main(Star):
             yield result
 
     @filter.llm_tool(name="delete_emoji")
-    async def llm_delete_emoji(self, event: AstrMessageEvent, file_path: str = ""):
-        """彻底删除指定的表情/贴纸喵。需要提供文件路径（如 cute/filename.jpg），先调用 search_emoji 可以获取路径喵。"""
-        if not file_path:
-            yield event.plain_result("请提供要删除的表情的文件路径喵！可先使用 search_emoji 查看。")
-            return
-        async for result in self.command_handler.delete_image(event, file_path):
-            yield result
+    async def llm_delete_emoji(self, event: AstrMessageEvent, emoji_id: str = ""):
+        """彻底删除指定的表情/贴纸喵。
+
+        用法（和 send_emoji_by_id 一样简单喵！）：
+        1. 先调 search_emoji 获取候选列表
+        2. 再传编号给本工具删除喵！
+        也可直接传文件名（如 1782391725_36794071.jpg）或路径喵。
+
+        Args:
+            emoji_id(string): 要删除的表情的编号（从 search_emoji 结果中获取，如 1、2、3）、文件名、或相对路径喵。
+        """
+        if not emoji_id:
+            return "请提供要删除的表情的编号喵！先使用 search_emoji 查看候选列表，再传入编号（如 1、2、3）删除喵。"
+
+        # 先尝试从 turn_state 候选列表按编号查找路径（类似 send_emoji_by_id 的逻辑）
+        try:
+            num_id = int(emoji_id)
+            turn_state = self._emoji_turn_state(event)
+            candidates = turn_state.get_candidates()
+            if candidates and 1 <= num_id <= len(candidates):
+                # 从候选缓存中取路径
+                path_from_candidate = candidates[num_id - 1]["path"]
+                logger.info(f"[Tool] 从候选列表按编号 {num_id} 找到路径: {path_from_candidate}")
+                messages = []
+                async for result in self.command_handler.delete_image(event, path_from_candidate):
+                    if isinstance(result, str):
+                        messages.append(result)
+                    else:
+                        text = getattr(result, 'text', str(result))
+                        messages.append(str(text))
+                sep = chr(10)
+                return sep.join(messages) if messages else "操作完成喵！"
+        except (ValueError, TypeError):
+            pass
+
+        # 兜底：传文件名或路径
+        messages = []
+        async for result in self.command_handler.delete_image(event, emoji_id):
+            if isinstance(result, str):
+                messages.append(result)
+            else:
+                text = getattr(result, 'text', str(result))
+                messages.append(str(text))
+        sep = chr(10)
+        return sep.join(messages) if messages else "操作完成喵！"
 
     @filter.permission_type(PermissionType.ADMIN)
     @meme.command("blacklist")
